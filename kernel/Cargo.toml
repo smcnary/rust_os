@@ -1,0 +1,19 @@
+[package]
+name = "rust_os"
+version = "0.1.0"
+edition = "2021"
+description = "Freestanding x86_64 kernel that boots with Limine"
+license = "MIT"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+spin = { version = "0.9.8", default-features = false, features = ["mutex", "spin_mutex", "lazy"] }
+x86_64 = { version = "0.15.5", default-features = false, features = ["instructions"] }

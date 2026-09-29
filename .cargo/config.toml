@@ -1,0 +1,8 @@
+# QEMU is started by scripts/mkiso.sh and scripts/run.sh, not by cargo.
+# Host `cargo test` stays on the default linux target.
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "code-model=kernel",
+    "-C", "relocation-model=static",
+]
