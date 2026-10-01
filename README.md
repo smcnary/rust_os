@@ -13,6 +13,7 @@ At the `rust_os>` prompt:
 - `mem` prints heap size, bytes in use, and usable RAM from the memory map
 - `ticks` prints how many timer interrupts have fired
 - `clear` clears the screen
+- `theme` lists screen looks; `theme <name>` switches palette and text size. Looks are `dusk` (8px), `phosphor` (16px, default), `amber` (16px), `paper` (8px), and `ice` (16px)
 - `halt` stops the CPU
 
 Input comes from the PS/2 keyboard and from the serial port.

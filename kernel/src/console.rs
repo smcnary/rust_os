@@ -3,14 +3,13 @@
 use crate::boot::{self, Framebuffer};
 use crate::font::FONT8X8;
 use crate::serial;
+use crate::theme::{self, Theme};
 use core::fmt::{self, Write};
 use spin::Mutex;
 
-const FG: (u8, u8, u8) = (0xD8, 0xE2, 0xDC);
-const BG: (u8, u8, u8) = (0x14, 0x18, 0x1C);
-
 struct Screen {
     fb: Option<Fb>,
+    theme: Theme,
     col: usize,
     row: usize,
     cols: usize,
@@ -33,6 +32,7 @@ impl Screen {
     const fn empty() -> Self {
         Self {
             fb: None,
+            theme: theme::DEFAULT,
             col: 0,
             row: 0,
             cols: 80,
@@ -40,15 +40,22 @@ impl Screen {
         }
     }
 
+    fn cell(&self) -> usize {
+        8 * self.theme.scale as usize
+    }
+
     fn attach(&mut self, info: &Framebuffer) {
         if info.bpp != 32 || info.address.is_null() || info.width == 0 || info.height == 0 {
             return;
         }
-        self.cols = (info.width as usize) / 8;
-        self.rows = (info.height as usize) / 8;
-        if self.cols == 0 || self.rows == 0 {
+        let cell = self.cell();
+        let cols = (info.width as usize) / cell;
+        let rows = (info.height as usize) / cell;
+        if cols == 0 || rows == 0 {
             return;
         }
+        self.cols = cols;
+        self.rows = rows;
         self.fb = Some(Fb {
             addr: info.address,
             pitch: info.pitch as usize,
@@ -63,18 +70,27 @@ impl Screen {
         self.clear();
     }
 
-    fn clear(&mut self) {
+    fn apply(&mut self, name: &str) -> bool {
+        let Some(next) = theme::by_name(name) else {
+            return false;
+        };
         if let Some(fb) = self.fb.as_ref() {
-            let bytes = fb.pitch.saturating_mul(fb.height);
-            for offset in 0..bytes {
-                unsafe { fb.addr.add(offset).write_volatile(0) };
+            let cell = 8 * next.scale as usize;
+            if fb.width / cell == 0 || fb.height / cell == 0 {
+                return false;
             }
-            // Paint the background so blank cells are not pure black.
-            for row in 0..self.rows {
-                for col in 0..self.cols {
-                    self.draw_cell(col, row, b' ', BG, BG);
-                }
-            }
+            self.cols = fb.width / cell;
+            self.rows = fb.height / cell;
+        }
+        self.theme = *next;
+        self.clear();
+        true
+    }
+
+    fn clear(&mut self) {
+        let bg = self.theme.bg;
+        if let Some(fb) = self.fb.as_ref() {
+            fill(fb, 0, fb.height, pack(bg, fb));
         }
         self.col = 0;
         self.row = 0;
@@ -82,17 +98,19 @@ impl Screen {
 
     fn write_byte(&mut self, byte: u8) {
         serial::write_byte(byte);
+        let fg = self.theme.fg;
+        let bg = self.theme.bg;
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
             0x08 | 0x7f => {
                 if self.col > 0 {
                     self.col -= 1;
-                    self.draw_cell(self.col, self.row, b' ', FG, BG);
+                    self.draw_cell(self.col, self.row, b' ', fg, bg);
                 }
             }
             byte => {
-                self.draw_cell(self.col, self.row, byte, FG, BG);
+                self.draw_cell(self.col, self.row, byte, fg, bg);
                 self.col += 1;
                 if self.col >= self.cols {
                     self.newline();
@@ -111,10 +129,12 @@ impl Screen {
     }
 
     fn scroll(&mut self) {
+        let cell = self.cell();
+        let bg = self.theme.bg;
         let Some(fb) = self.fb.as_ref() else {
             return;
         };
-        let row_bytes = fb.pitch.saturating_mul(8);
+        let row_bytes = fb.pitch.saturating_mul(cell);
         let total = fb.pitch.saturating_mul(fb.height);
         if row_bytes == 0 || row_bytes >= total {
             return;
@@ -125,25 +145,34 @@ impl Screen {
                 fb.addr.add(offset).write_volatile(byte);
             }
         }
-        for row_offset in (total - row_bytes)..total {
-            unsafe { fb.addr.add(row_offset).write_volatile(0) };
-        }
+        let start_y = fb.height.saturating_sub(cell);
+        fill(fb, start_y, fb.height, pack(bg, fb));
     }
 
     fn draw_cell(&self, col: usize, row: usize, ch: u8, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
         let Some(fb) = self.fb.as_ref() else {
             return;
         };
-        let glyph = FONT8X8[ch as usize];
-        let origin_x = col * 8;
-        let origin_y = row * 8;
+        let scale = self.theme.scale as usize;
+        let glyph = FONT8X8[(ch as usize).min(FONT8X8.len() - 1)];
+        let origin_x = col * 8 * scale;
+        let origin_y = row * 8 * scale;
         let fg = pack(fg, fb);
         let bg = pack(bg, fb);
         for gy in 0..8 {
             let bits = glyph[gy];
             for gx in 0..8 {
                 let color = if bits & (1 << gx) != 0 { fg } else { bg };
-                put_pixel(fb, origin_x + gx, origin_y + gy, color);
+                for sy in 0..scale {
+                    for sx in 0..scale {
+                        put_pixel(
+                            fb,
+                            origin_x + gx * scale + sx,
+                            origin_y + gy * scale + sy,
+                            color,
+                        );
+                    }
+                }
             }
         }
     }
@@ -151,6 +180,14 @@ impl Screen {
 
 fn pack(rgb: (u8, u8, u8), fb: &Fb) -> u32 {
     ((rgb.0 as u32) << fb.red) | ((rgb.1 as u32) << fb.green) | ((rgb.2 as u32) << fb.blue)
+}
+
+fn fill(fb: &Fb, y0: usize, y1: usize, color: u32) {
+    for y in y0..y1 {
+        for x in 0..fb.width {
+            put_pixel(fb, x, y, color);
+        }
+    }
 }
 
 fn put_pixel(fb: &Fb, x: usize, y: usize, color: u32) {
@@ -183,6 +220,15 @@ pub fn init() {
 
 pub fn clear() {
     CONSOLE.lock().clear();
+}
+
+/// Switch to a named look and clear the framebuffer. Unknown names do nothing.
+pub fn apply(name: &str) -> bool {
+    CONSOLE.lock().apply(name)
+}
+
+pub fn current_name() -> &'static str {
+    CONSOLE.lock().theme.name
 }
 
 pub fn write_fmt(args: fmt::Arguments) {

@@ -1,6 +1,6 @@
 //! Freestanding x86_64 kernel library.
 //!
-//! Host tests compile the scancode decoder, the shell, and the heap.
+//! Host tests compile the scancode decoder, the shell, the themes, and the heap.
 //! Hardware modules are only built for the kernel.
 
 #![cfg_attr(not(test), no_std)]
@@ -8,6 +8,7 @@
 pub mod heap;
 pub mod keyboard;
 pub mod shell;
+pub mod theme;
 
 #[cfg(not(test))]
 pub mod boot;

@@ -7,6 +7,7 @@ commands:\n\
   mem    heap and usable RAM\n\
   ticks  timer interrupts since boot\n\
   clear  clear the screen\n\
+  theme  list looks or switch to one\n\
   halt   stop the CPU\n";
 
 #[derive(Debug, PartialEq, Eq)]
@@ -17,6 +18,7 @@ pub enum Command<'a> {
     Mem,
     Ticks,
     Clear,
+    Theme(Option<&'a str>),
     Halt,
     Unknown(&'a str),
 }
@@ -35,6 +37,13 @@ pub fn parse(line: &str) -> Command<'_> {
         "mem" => Command::Mem,
         "ticks" => Command::Ticks,
         "clear" => Command::Clear,
+        "theme" => {
+            if rest.is_empty() {
+                Command::Theme(None)
+            } else {
+                Command::Theme(Some(rest))
+            }
+        }
         "halt" => Command::Halt,
         other => Command::Unknown(other),
     }
@@ -91,9 +100,12 @@ mod tests {
         assert_eq!(parse("mem"), Command::Mem);
         assert_eq!(parse("ticks"), Command::Ticks);
         assert_eq!(parse("clear"), Command::Clear);
+        assert_eq!(parse("theme"), Command::Theme(None));
+        assert_eq!(parse("theme phosphor"), Command::Theme(Some("phosphor")));
+        assert_eq!(parse("theme nope"), Command::Theme(Some("nope")));
         assert_eq!(parse("halt"), Command::Halt);
         assert_eq!(parse("nope"), Command::Unknown("nope"));
-        for name in ["help", "echo", "mem", "ticks", "clear", "halt"] {
+        for name in ["help", "echo", "mem", "ticks", "clear", "theme", "halt"] {
             assert!(HELP.contains(name), "{name} missing from help text");
         }
         assert!(HELP.contains("commands:"));

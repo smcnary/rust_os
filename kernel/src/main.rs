@@ -6,7 +6,7 @@
 extern crate alloc;
 
 use rust_os::shell::{self, Command, Editor};
-use rust_os::{console, gdt, interrupts, memory, serial};
+use rust_os::{console, gdt, interrupts, memory, serial, theme};
 
 #[no_mangle]
 pub extern "C" fn kernel_main() -> ! {
@@ -64,6 +64,21 @@ fn on_byte(editor: &mut Editor, byte: u8) {
         Command::Clear => {
             console::clear();
             serial::write_str("\u{1b}[2J\u{1b}[H");
+        }
+        Command::Theme(None) => {
+            let current = console::current_name();
+            for look in theme::iter() {
+                let mark = if look.name == current { '*' } else { ' ' };
+                let px = 8 * look.scale;
+                rust_os::println!("{mark} {name:<9} {px}px", name = look.name);
+            }
+        }
+        Command::Theme(Some(name)) => {
+            if console::apply(name) {
+                rust_os::println!("{name}");
+            } else {
+                rust_os::println!("unknown theme: {name}");
+            }
         }
         Command::Halt => {
             rust_os::println!("halting");
