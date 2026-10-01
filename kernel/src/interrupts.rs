@@ -1,4 +1,4 @@
-//! IDT: breakpoint, double fault, PIT timer, and the keyboard.
+//! IDT: breakpoint, double fault, PIT timer, keyboard, and mouse.
 //!
 //! Stable Rust 1.83 does not allow the `x86-interrupt` ABI, so each gate
 //! points at an assembly stub. The stub saves caller-saved registers, aligns
@@ -6,6 +6,7 @@
 
 use crate::gdt::DOUBLE_FAULT_IST;
 use crate::keyboard;
+use crate::mouse;
 use crate::pic;
 use crate::serial;
 use core::arch::global_asm;
@@ -27,6 +28,7 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
             .set_stack_index(DOUBLE_FAULT_IST);
         idt[32].set_handler_addr(VirtAddr::new(timer_stub as usize as u64));
         idt[33].set_handler_addr(VirtAddr::new(keyboard_stub as usize as u64));
+        idt[44].set_handler_addr(VirtAddr::new(mouse_stub as usize as u64));
     }
     idt
 });
@@ -34,6 +36,11 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
 pub fn init() {
     IDT.load();
     pic::init();
+    if mouse::enable() {
+        // IRQ2 is the cascade. IRQ12 does not reach the CPU while it is masked.
+        pic::unmask(2);
+        pic::unmask(12);
+    }
     x86_64::instructions::interrupts::enable();
 }
 
@@ -46,6 +53,7 @@ extern "C" {
     fn double_fault_stub();
     fn timer_stub();
     fn keyboard_stub();
+    fn mouse_stub();
 }
 
 macro_rules! irq_stub {
@@ -88,6 +96,7 @@ macro_rules! irq_stub {
 irq_stub!("breakpoint_stub", breakpoint_rust);
 irq_stub!("timer_stub", timer_rust);
 irq_stub!("keyboard_stub", keyboard_rust);
+irq_stub!("mouse_stub", mouse_rust);
 
 global_asm!(
     ".global double_fault_stub",
@@ -108,6 +117,12 @@ extern "C" fn keyboard_rust() {
     let scancode = unsafe { Port::<u8>::new(0x60).read() };
     keyboard::handle_scancode(scancode);
     pic::end_of_interrupt(1);
+}
+
+extern "C" fn mouse_rust() {
+    let byte = unsafe { Port::<u8>::new(0x60).read() };
+    mouse::handle_byte(byte);
+    pic::end_of_interrupt(12);
 }
 
 extern "C" fn breakpoint_rust() {

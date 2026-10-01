@@ -31,6 +31,9 @@ pub extern "C" fn kernel_main() -> ! {
         while let Some(byte) = rust_os::keyboard::pop() {
             on_byte(&mut editor, byte);
         }
+        while let Some(event) = rust_os::mouse::pop() {
+            console::move_pointer(event);
+        }
         x86_64::instructions::hlt();
     }
 }

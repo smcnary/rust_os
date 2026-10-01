@@ -37,6 +37,19 @@ pub fn init() {
     }
 }
 
+pub fn unmask(irq: u8) {
+    let (port, line) = if irq < 8 {
+        (PIC1_DATA, irq)
+    } else {
+        (PIC2_DATA, irq - 8)
+    };
+    unsafe {
+        let mut data = Port::<u8>::new(port);
+        let mask = data.read() & !(1 << line);
+        data.write(mask);
+    }
+}
+
 pub fn end_of_interrupt(irq: u8) {
     unsafe {
         if irq >= 8 {

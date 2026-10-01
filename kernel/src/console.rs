@@ -2,18 +2,28 @@
 
 use crate::boot::{self, Framebuffer};
 use crate::font::FONT8X8;
+use crate::mouse::Event;
 use crate::serial;
 use crate::theme::{self, Theme};
 use core::fmt::{self, Write};
 use spin::Mutex;
 
+const MAX_COLS: usize = 256;
+const MAX_ROWS: usize = 128;
+
 struct Screen {
     fb: Option<Fb>,
     theme: Theme,
+    cells: [u8; MAX_COLS * MAX_ROWS],
     col: usize,
     row: usize,
     cols: usize,
     rows: usize,
+    pointer_x: isize,
+    pointer_y: isize,
+    pointer_col: usize,
+    pointer_row: usize,
+    buttons: u8,
 }
 
 struct Fb {
@@ -33,10 +43,16 @@ impl Screen {
         Self {
             fb: None,
             theme: theme::DEFAULT,
+            cells: [b' '; MAX_COLS * MAX_ROWS],
             col: 0,
             row: 0,
             cols: 80,
             rows: 25,
+            pointer_x: 0,
+            pointer_y: 0,
+            pointer_col: 0,
+            pointer_row: 0,
+            buttons: 0,
         }
     }
 
@@ -49,13 +65,15 @@ impl Screen {
             return;
         }
         let cell = self.cell();
-        let cols = (info.width as usize) / cell;
-        let rows = (info.height as usize) / cell;
+        let cols = ((info.width as usize) / cell).min(MAX_COLS);
+        let rows = ((info.height as usize) / cell).min(MAX_ROWS);
         if cols == 0 || rows == 0 {
             return;
         }
         self.cols = cols;
         self.rows = rows;
+        self.pointer_x = (cols * cell / 2) as isize;
+        self.pointer_y = (rows * cell / 2) as isize;
         self.fb = Some(Fb {
             addr: info.address,
             pitch: info.pitch as usize,
@@ -76,11 +94,13 @@ impl Screen {
         };
         if let Some(fb) = self.fb.as_ref() {
             let cell = 8 * next.scale as usize;
-            if fb.width / cell == 0 || fb.height / cell == 0 {
+            let cols = (fb.width / cell).min(MAX_COLS);
+            let rows = (fb.height / cell).min(MAX_ROWS);
+            if cols == 0 || rows == 0 {
                 return false;
             }
-            self.cols = fb.width / cell;
-            self.rows = fb.height / cell;
+            self.cols = cols;
+            self.rows = rows;
         }
         self.theme = *next;
         self.clear();
@@ -92,31 +112,75 @@ impl Screen {
         if let Some(fb) = self.fb.as_ref() {
             fill(fb, 0, fb.height, pack(bg, fb));
         }
+        for row in 0..self.rows {
+            for col in 0..self.cols {
+                self.cells[row * MAX_COLS + col] = b' ';
+            }
+        }
         self.col = 0;
         self.row = 0;
+        self.sync_pointer_cell();
+        self.paint(self.pointer_col, self.pointer_row);
+    }
+
+    fn nudge(&mut self, event: Event) {
+        if self.fb.is_none() || self.cols == 0 || self.rows == 0 {
+            return;
+        }
+        let old_col = self.pointer_col;
+        let old_row = self.pointer_row;
+        let old_buttons = self.buttons;
+        self.pointer_x = self.pointer_x.saturating_add(event.dx as isize);
+        self.pointer_y = self.pointer_y.saturating_add(event.dy as isize);
+        self.buttons = event.buttons;
+        self.sync_pointer_cell();
+        if old_col != self.pointer_col || old_row != self.pointer_row {
+            self.paint(old_col, old_row);
+            self.paint(self.pointer_col, self.pointer_row);
+        } else if old_buttons != self.buttons {
+            self.paint(self.pointer_col, self.pointer_row);
+        }
+    }
+
+    fn sync_pointer_cell(&mut self) {
+        let cell = self.cell();
+        if cell == 0 || self.cols == 0 || self.rows == 0 {
+            return;
+        }
+        let max_x = (self.cols * cell).saturating_sub(1) as isize;
+        let max_y = (self.rows * cell).saturating_sub(1) as isize;
+        self.pointer_x = self.pointer_x.clamp(0, max_x);
+        self.pointer_y = self.pointer_y.clamp(0, max_y);
+        self.pointer_col = (self.pointer_x as usize / cell).min(self.cols - 1);
+        self.pointer_row = (self.pointer_y as usize / cell).min(self.rows - 1);
     }
 
     fn write_byte(&mut self, byte: u8) {
         serial::write_byte(byte);
-        let fg = self.theme.fg;
-        let bg = self.theme.bg;
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.col = 0,
             0x08 | 0x7f => {
                 if self.col > 0 {
                     self.col -= 1;
-                    self.draw_cell(self.col, self.row, b' ', fg, bg);
+                    self.put_char(self.col, self.row, b' ');
                 }
             }
             byte => {
-                self.draw_cell(self.col, self.row, byte, fg, bg);
+                self.put_char(self.col, self.row, byte);
                 self.col += 1;
                 if self.col >= self.cols {
                     self.newline();
                 }
             }
         }
+    }
+
+    fn put_char(&mut self, col: usize, row: usize, ch: u8) {
+        if col < self.cols && row < self.rows {
+            self.cells[row * MAX_COLS + col] = ch;
+        }
+        self.paint(col, row);
     }
 
     fn newline(&mut self) {
@@ -129,24 +193,73 @@ impl Screen {
     }
 
     fn scroll(&mut self) {
+        self.paint_plain(self.pointer_col, self.pointer_row);
         let cell = self.cell();
         let bg = self.theme.bg;
-        let Some(fb) = self.fb.as_ref() else {
-            return;
-        };
-        let row_bytes = fb.pitch.saturating_mul(cell);
-        let total = fb.pitch.saturating_mul(fb.height);
-        if row_bytes == 0 || row_bytes >= total {
-            return;
-        }
-        for offset in 0..(total - row_bytes) {
-            unsafe {
-                let byte = fb.addr.add(offset + row_bytes).read_volatile();
-                fb.addr.add(offset).write_volatile(byte);
+        let fb = self.fb.as_ref().map(|fb| Fb {
+            addr: fb.addr,
+            pitch: fb.pitch,
+            width: fb.width,
+            height: fb.height,
+            red: fb.red,
+            green: fb.green,
+            blue: fb.blue,
+        });
+        if let Some(fb) = fb.as_ref() {
+            let row_bytes = fb.pitch.saturating_mul(cell);
+            let total = fb.pitch.saturating_mul(fb.height);
+            if row_bytes != 0 && row_bytes < total {
+                for offset in 0..(total - row_bytes) {
+                    unsafe {
+                        let byte = fb.addr.add(offset + row_bytes).read_volatile();
+                        fb.addr.add(offset).write_volatile(byte);
+                    }
+                }
+                let start_y = fb.height.saturating_sub(cell);
+                fill(fb, start_y, fb.height, pack(bg, fb));
             }
         }
-        let start_y = fb.height.saturating_sub(cell);
-        fill(fb, start_y, fb.height, pack(bg, fb));
+        self.scroll_grid();
+        self.paint(self.pointer_col, self.pointer_row);
+    }
+
+    fn scroll_grid(&mut self) {
+        if self.rows == 0 {
+            return;
+        }
+        for row in 1..self.rows {
+            for col in 0..self.cols {
+                self.cells[(row - 1) * MAX_COLS + col] = self.cells[row * MAX_COLS + col];
+            }
+        }
+        let last = self.rows - 1;
+        for col in 0..self.cols {
+            self.cells[last * MAX_COLS + col] = b' ';
+        }
+    }
+
+    fn paint(&self, col: usize, row: usize) {
+        self.paint_cell(col, row, true);
+    }
+
+    fn paint_plain(&self, col: usize, row: usize) {
+        self.paint_cell(col, row, false);
+    }
+
+    fn paint_cell(&self, col: usize, row: usize, highlight: bool) {
+        if col >= self.cols || row >= self.rows {
+            return;
+        }
+        let ch = self.cells[row * MAX_COLS + col];
+        let on_pointer = highlight && col == self.pointer_col && row == self.pointer_row;
+        let (fg, bg) = if on_pointer && self.buttons != 0 {
+            (self.theme.fg, self.theme.fg)
+        } else if on_pointer {
+            (self.theme.bg, self.theme.fg)
+        } else {
+            (self.theme.fg, self.theme.bg)
+        };
+        self.draw_cell(col, row, ch, fg, bg);
     }
 
     fn draw_cell(&self, col: usize, row: usize, ch: u8, fg: (u8, u8, u8), bg: (u8, u8, u8)) {
@@ -229,6 +342,10 @@ pub fn apply(name: &str) -> bool {
 
 pub fn current_name() -> &'static str {
     CONSOLE.lock().theme.name
+}
+
+pub fn move_pointer(event: Event) {
+    CONSOLE.lock().nudge(event);
 }
 
 pub fn write_fmt(args: fmt::Arguments) {
