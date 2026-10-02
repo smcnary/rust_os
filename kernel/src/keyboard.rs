@@ -3,6 +3,7 @@
 //! The interrupt handler is the only producer. The shell loop is the only
 //! consumer. Serial input does not use this queue.
 
+use crate::shell::{KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_UP};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
@@ -30,7 +31,16 @@ impl Decoder {
         }
         if self.extended {
             self.extended = false;
-            return None;
+            if scancode & 0x80 != 0 {
+                return None;
+            }
+            return match scancode {
+                0x4B => Some(KEY_LEFT),
+                0x4D => Some(KEY_RIGHT),
+                0x48 => Some(KEY_UP),
+                0x50 => Some(KEY_DOWN),
+                _ => None,
+            };
         }
         let released = scancode & 0x80 != 0;
         let code = (scancode & 0x7F) as usize;
@@ -215,6 +225,7 @@ const fn make_shifted() -> [u8; 128] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::{KEY_LEFT, KEY_UP};
 
     #[test]
     fn decodes_letters_shift_and_editing_keys() {
@@ -229,7 +240,12 @@ mod tests {
         assert_eq!(decoder.feed(0x0E), Some(0x08));
         assert_eq!(decoder.feed(0x39), Some(b' '));
         assert_eq!(decoder.feed(0xE0), None);
-        assert_eq!(decoder.feed(0x48), None);
+        assert_eq!(decoder.feed(0x48), Some(KEY_UP));
+        assert_eq!(decoder.feed(0xC8), None);
+        assert_eq!(decoder.feed(0xE0), None);
+        assert_eq!(decoder.feed(0x4B), Some(KEY_LEFT));
+        assert_eq!(decoder.feed(0xE0), None);
+        assert_eq!(decoder.feed(0xCB), None);
     }
 
     #[test]

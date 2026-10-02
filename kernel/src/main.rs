@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use rust_os::shell::{self, Command, Editor};
+use rust_os::shell::{self, Command, Editor, Effect};
 use rust_os::{console, gdt, interrupts, memory, serial, theme};
 
 #[no_mangle]
@@ -21,9 +21,9 @@ pub extern "C" fn kernel_main() -> ! {
     exercise_heap();
     gdt::init();
     interrupts::init();
-    rust_os::print!("rust_os> ");
 
     let mut editor = Editor::new();
+    show_prompt(&editor, true);
     loop {
         while let Some(byte) = serial::try_read() {
             on_byte(&mut editor, byte);
@@ -38,18 +38,35 @@ pub extern "C" fn kernel_main() -> ! {
     }
 }
 
-fn on_byte(editor: &mut Editor, byte: u8) {
-    if matches!(byte, b'\r' | b'\n') {
-        rust_os::print!("\n");
-    } else if matches!(byte, 0x08 | 0x7f) {
-        rust_os::print!("\x08 \x08");
-    } else if (0x20..0x7f).contains(&byte) {
-        rust_os::print!("{}", byte as char);
-    }
+const PROMPT: &str = "rust_os> ";
 
-    let Some(line) = editor.push(byte) else {
-        return;
-    };
+fn show_prompt(editor: &Editor, fresh: bool) {
+    if fresh {
+        console::begin_line();
+    }
+    let mut bytes = [0u8; PROMPT.len() + 160];
+    let prompt = PROMPT.as_bytes();
+    bytes[..prompt.len()].copy_from_slice(prompt);
+    let line = editor.line().as_bytes();
+    let end = prompt.len() + line.len();
+    bytes[prompt.len()..end].copy_from_slice(line);
+    let text = core::str::from_utf8(&bytes[..end]).unwrap_or(PROMPT);
+    console::redraw_input(text, prompt.len() + editor.cursor());
+}
+
+fn on_byte(editor: &mut Editor, byte: u8) {
+    match editor.push(byte) {
+        Effect::Ignored => {}
+        Effect::Redraw => show_prompt(editor, false),
+        Effect::Submitted(line) => {
+            console::end_input();
+            dispatch(line);
+            show_prompt(editor, true);
+        }
+    }
+}
+
+fn dispatch(line: &str) {
     match shell::parse(line) {
         Command::Empty => {}
         Command::Help => rust_os::print!("{}", shell::HELP),
@@ -90,7 +107,6 @@ fn on_byte(editor: &mut Editor, byte: u8) {
         }
         Command::Unknown(name) => rust_os::println!("unknown command: {name}"),
     }
-    rust_os::print!("rust_os> ");
 }
 
 fn exercise_heap() {

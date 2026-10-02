@@ -24,6 +24,9 @@ struct Screen {
     pointer_col: usize,
     pointer_row: usize,
     buttons: u8,
+    anchor_row: usize,
+    anchor_col: usize,
+    drawn: usize,
 }
 
 struct Fb {
@@ -53,6 +56,9 @@ impl Screen {
             pointer_col: 0,
             pointer_row: 0,
             buttons: 0,
+            anchor_row: 0,
+            anchor_col: 0,
+            drawn: 0,
         }
     }
 
@@ -119,6 +125,9 @@ impl Screen {
         }
         self.col = 0;
         self.row = 0;
+        self.anchor_row = 0;
+        self.anchor_col = 0;
+        self.drawn = 0;
         self.sync_pointer_cell();
         self.paint(self.pointer_col, self.pointer_row);
     }
@@ -174,6 +183,70 @@ impl Screen {
                 }
             }
         }
+    }
+
+    fn reserve_input(&mut self, cells: usize) {
+        let cols = self.cols.max(1);
+        if self.rows == 0 || cells == 0 {
+            return;
+        }
+        loop {
+            let start = self.anchor_row * cols + self.anchor_col;
+            let end_row = (start + cells - 1) / cols;
+            if end_row < self.rows || self.anchor_row == 0 {
+                break;
+            }
+            self.scroll();
+            self.anchor_row -= 1;
+        }
+    }
+
+    fn input_cell(&self, offset: usize) -> (usize, usize) {
+        let cols = self.cols.max(1);
+        let pos = self.anchor_row * cols + self.anchor_col + offset;
+        let row = if self.rows == 0 {
+            0
+        } else {
+            (pos / cols).min(self.rows - 1)
+        };
+        (row, pos % cols)
+    }
+
+    fn redraw_input(&mut self, text: &str, cursor: usize) {
+        let span = self.drawn.max(text.len());
+        self.reserve_input(span.max(1));
+        for offset in 0..span {
+            let (row, col) = self.input_cell(offset);
+            self.put_char(col, row, b' ');
+        }
+        for (offset, byte) in text.bytes().enumerate() {
+            if byte < 0x20 || byte >= 0x7f {
+                continue;
+            }
+            let (row, col) = self.input_cell(offset);
+            self.put_char(col, row, byte);
+        }
+        self.drawn = text.len();
+        let cursor = cursor.min(text.len());
+        let (row, col) = self.input_cell(cursor);
+        self.row = row;
+        self.col = col;
+        serial::write_byte(b'\r');
+        serial::write_str(text);
+        serial::write_str("\u{1b}[K");
+        for _ in 0..text.len().saturating_sub(cursor) {
+            serial::write_byte(0x08);
+        }
+    }
+
+    fn end_input(&mut self) {
+        let (row, col) = self.input_cell(self.drawn);
+        self.row = row;
+        self.col = col;
+        if self.col != 0 {
+            self.write_byte(b'\n');
+        }
+        self.drawn = 0;
     }
 
     fn put_char(&mut self, col: usize, row: usize, ch: u8) {
@@ -346,6 +419,24 @@ pub fn current_name() -> &'static str {
 
 pub fn move_pointer(event: Event) {
     CONSOLE.lock().nudge(event);
+}
+
+/// Remember the cell where the next prompt starts.
+pub fn begin_line() {
+    let mut screen = CONSOLE.lock();
+    screen.anchor_row = screen.row;
+    screen.anchor_col = screen.col;
+    screen.drawn = 0;
+}
+
+/// Clear the previous input, write `text`, and leave the cursor at `cursor`.
+pub fn redraw_input(text: &str, cursor: usize) {
+    CONSOLE.lock().redraw_input(text, cursor);
+}
+
+/// Move to the end of the input line and start the next row.
+pub fn end_input() {
+    CONSOLE.lock().end_input();
 }
 
 pub fn write_fmt(args: fmt::Arguments) {

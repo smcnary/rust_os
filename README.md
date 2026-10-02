@@ -16,7 +16,7 @@ At the `rust_os>` prompt:
 - `theme` lists screen looks; `theme <name>` switches palette and text size. Looks are `dusk` (8px), `phosphor` (16px, default), `amber` (16px), `paper` (8px), and `ice` (16px)
 - `halt` stops the CPU
 
-Input comes from the PS/2 keyboard, the PS/2 mouse, and the serial port. The mouse moves a highlighted cell; holding a button fills that cell. Click the QEMU window so it receives the pointer.
+Input comes from the PS/2 keyboard, the PS/2 mouse, and the serial port. Left and right move the cursor within the line. Up and down walk previous commands. The mouse moves a highlighted cell; holding a button fills that cell. Click the QEMU window so it receives the pointer.
 
 ## Build and boot
 
